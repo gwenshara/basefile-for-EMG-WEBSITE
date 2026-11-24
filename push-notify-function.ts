@@ -86,7 +86,26 @@ export async function vapidHeader(endpoint: string, pubB64: string, privB64: str
 const J = (o: unknown, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 
+/* signed picture link: only a notification we sent can fetch a member's picture */
+const sigFor = async (name: string, secret: string) => {
+  const k = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToB64u(new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(name.toLowerCase())))).slice(0, 24);
+};
+
 Deno.serve(async (req) => {
+  /* GET ?av=NAME&sig=...: the sender's profile picture, used as the notification icon */
+  if (req.method === "GET") {
+    const u = new URL(req.url), name = u.searchParams.get("av") || "", sig = u.searchParams.get("sig") || "";
+    const sec = Deno.env.get("PUSH_SECRET"), b0 = Deno.env.get("SUPABASE_URL"), sv = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!sec || !b0 || !sv || !/^[A-Za-z0-9_]{3,20}$/.test(name) || sig !== await sigFor(name, sec)) return new Response("not found", { status: 404 });
+    const r = await fetch(b0 + "/rest/v1/profiles?select=avatar&username=eq." + encodeURIComponent(name) + "&limit=1", { headers: { apikey: sv, Authorization: "Bearer " + sv } });
+    const a = r.ok ? (await r.json())[0]?.avatar : null;
+    const m = typeof a === "string" ? a.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=]+)$/) : null;
+    if (!m) return new Response("no picture", { status: 404 });
+    const bin = atob(m[2]), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Response(bytes, { headers: { "Content-Type": m[1], "Cache-Control": "private, max-age=600", "Access-Control-Allow-Origin": "*" } });
+  }
   if (req.method !== "POST") return J({ error: "POST only" }, 405);
   const secret = Deno.env.get("PUSH_SECRET");
   if (!secret || req.headers.get("x-push-secret") !== secret) return J({ error: "forbidden" }, 401);
@@ -119,7 +138,14 @@ Deno.serve(async (req) => {
   } else return J({ error: "no recipients" }, 400);
   const subs = rows.filter((s: any) => !s.prefs || s.prefs[kind] !== false);
 
+  /* for messages, the sender's profile picture becomes the notification icon (the title starts with their username) */
+  let icon = "";
+  if (kind === "dm" || kind === "group") {
+    const nm = String(b.title || "").split(" ")[0];
+    if (/^[A-Za-z0-9_]{3,20}$/.test(nm)) icon = base + "/functions/v1/push-notify?av=" + encodeURIComponent(nm) + "&sig=" + await sigFor(nm, secret);
+  }
   const payload = enc.encode(JSON.stringify({
+    icon,
     title: String(b.title || "EM Wiki").slice(0, 80),
     body: String(b.body || "").slice(0, 180),
     url: String(b.url || "forum-discussions.html").slice(0, 200),
