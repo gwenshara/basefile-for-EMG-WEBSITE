@@ -33,7 +33,7 @@ export default {
       const bin = atob(m[1]);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return new Response(bytes, { headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=300" } });
+      return new Response(bytes, { headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=60" } });
     }
 
     // 2) the page: /list.html?c=<code>  (same page, but with this person's preview tags)
@@ -50,7 +50,7 @@ export default {
     const img = SITE + "/list-img/" + code + ".jpg?v=" + (d.updated || 0);
     const set = (value) => ({ element(e) { e.setAttribute("content", value); } });
 
-    return new HTMLRewriter()
+    const out = new HTMLRewriter()
       .on("title", { element(e) { e.setInnerContent(title); } })
       .on('meta[property="og:title"]', set(title))
       .on('meta[name="twitter:title"]', set(title))
@@ -61,5 +61,9 @@ export default {
       .on('meta[name="twitter:image"]', set(img))
       .on('meta[property="og:url"]', set(SITE + "/list.html?c=" + code))
       .transform(page);
+    // never let the page (and so the preview tags) be cached, so a changed list shows up right away
+    const res = new Response(out.body, out);
+    res.headers.set("Cache-Control", "no-cache, no-store, must-revalidate");
+    return res;
   },
 };
